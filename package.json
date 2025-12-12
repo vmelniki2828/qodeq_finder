@@ -1,0 +1,25 @@
+{
+  "name": "qodeq_finder",
+  "version": "1.0.0",
+  "description": "Telegram бот для поиска слов в каналах, группах и чатах",
+  "main": "bot.js",
+  "type": "module",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "node --watch bot.js"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "search",
+    "monitor"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "grammy": "^1.21.1",
+    "dotenv": "^16.4.5",
+    "telegram": "^2.25.0"
+  }
+}
+

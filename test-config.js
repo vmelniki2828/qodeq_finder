@@ -20,3 +20,4 @@ try {
   console.error("❌ Ошибка:", error.message);
 }
 
+

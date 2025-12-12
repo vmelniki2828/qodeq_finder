@@ -1,4 +1,4 @@
-import { Bot, InlineKeyboard } from "grammy";
+import { Bot, Keyboard } from "grammy";
 import { TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions/index.js";
 import dotenv from "dotenv";
@@ -150,11 +150,15 @@ async function searchInChannelHistory(chatId, searchTerms, limit = 1000) {
           const lowerText = text.toLowerCase();
           
           // Проверяем наличие искомых слов
-          const found = searchTerms.some(term => 
-            lowerText.includes(term.toLowerCase())
-          );
+          let foundTerm = null;
+          for (const term of searchTerms) {
+            if (lowerText.includes(term.toLowerCase())) {
+              foundTerm = term;
+              break;
+            }
+          }
           
-          if (found) {
+          if (foundTerm) {
             const messageDate = msg.date ? (msg.date instanceof Date ? Math.floor(msg.date.getTime() / 1000) : msg.date) : Math.floor(Date.now() / 1000);
             const cleanChatId = String(chatId).replace(/^-100/, '');
             
@@ -165,7 +169,8 @@ async function searchInChannelHistory(chatId, searchTerms, limit = 1000) {
               text: text,
               author: "Канал",
               date: messageDate,
-              link: `https://t.me/c/${cleanChatId}/${msg.id}`
+              link: `https://t.me/c/${cleanChatId}/${msg.id}`,
+              foundTerm: foundTerm
             });
             
             console.log(`✅ Найдено сообщение #${msg.id} в "${chatName}"`);
@@ -205,31 +210,44 @@ function containsSearchTerms(text) {
   return CONFIG.searchTerms.some(term => lowerText.includes(term.toLowerCase()));
 }
 
+function findSearchTerm(text) {
+  if (!text) return null;
+  const lowerText = text.toLowerCase();
+  for (const term of CONFIG.searchTerms) {
+    if (lowerText.includes(term.toLowerCase())) {
+      return term;
+    }
+  }
+  return null;
+}
+
 function createMainMenu() {
   CONFIG = loadConfig();
   const searchStatus = CONFIG.searchEnabled ? "⏸️ Остановить поиск" : "▶️ Начать поиск";
   const resultsCount = CONFIG.searchResults ? CONFIG.searchResults.length : 0;
   
-  const keyboard = new InlineKeyboard()
-    .text("➕ Добавить канал/группу", "add_chat")
+  const keyboard = new Keyboard()
+    .text("➕ Добавить канал/группу")
     .row()
-    .text("🔍 Добавить слово", "add_word")
+    .text("🔍 Добавить слово")
     .row()
-    .text(searchStatus, "toggle_search");
+    .text(searchStatus);
   
   if (resultsCount > 0) {
-    keyboard.row().text(`📋 Показать результаты (${resultsCount})`, "show_results");
+    keyboard.row().text(`📋 Показать результаты (${resultsCount})`);
   }
   
   keyboard
     .row()
-    .text("📋 Список каналов", "list_chats")
-    .text("📝 Список слов", "list_words")
+    .text("📋 Список каналов")
+    .text("📝 Список слов")
     .row()
-    .text("⚙️ Настройки", "settings")
-    .text("📊 Статус", "status");
+    .text("⚙️ Настройки")
+    .text("📊 Статус")
+    .row()
+    .text("🔙 Главное меню");
   
-  return keyboard;
+  return keyboard.resized().persistent();
 }
 
 bot.command("start", async (ctx) => {
@@ -242,136 +260,154 @@ bot.command("start", async (ctx) => {
   );
 });
 
-bot.callbackQuery("add_chat", async (ctx) => {
+// Обработчик главного меню
+bot.hears("🔙 Главное меню", async (ctx) => {
+  // Сбрасываем состояние пользователя при возврате в главное меню
+  userStates.delete(ctx.from.id);
+  await ctx.reply("📱 **Главное меню:**", {
+    parse_mode: "Markdown",
+    reply_markup: createMainMenu()
+  });
+});
+
+bot.hears("➕ Добавить канал/группу", async (ctx) => {
   userStates.set(ctx.from.id, { action: "add_chat" });
-  await ctx.editMessageText(
+  await ctx.reply(
     "📱 **Добавить канал/группу/чат**\n\nОтправьте ID или @username:\n• ID: `-1001234567890`\n• Username: `@channelname`\n\nИспользуйте /chatid в чате для получения ID.\n\n⚠️ Для каналов бот должен быть администратором!",
     {
       parse_mode: "Markdown",
-      reply_markup: new InlineKeyboard().text("🔙 Назад", "menu_main")
+      reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
     }
   );
-  await ctx.answerCallbackQuery();
 });
 
-bot.callbackQuery("add_word", async (ctx) => {
+bot.hears("🔍 Добавить слово", async (ctx) => {
   userStates.set(ctx.from.id, { action: "add_word" });
-  await ctx.editMessageText(
+  await ctx.reply(
     "🔍 **Добавить слово**\n\nОтправьте слово или фразу для поиска.\n\nПример: `javascript`",
     {
       parse_mode: "Markdown",
-      reply_markup: new InlineKeyboard().text("🔙 Назад", "menu_main")
+      reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
     }
   );
-  await ctx.answerCallbackQuery();
 });
 
-bot.callbackQuery("list_chats", async (ctx) => {
+bot.hears("📋 Список каналов", async (ctx) => {
   CONFIG = loadConfig();
   if (CONFIG.monitoredChats.length === 0) {
-    await ctx.editMessageText("📋 Список пуст.", {
-      reply_markup: new InlineKeyboard().text("➕ Добавить", "add_chat").row().text("🔙 Назад", "menu_main")
+    await ctx.reply("📋 Список пуст.", {
+      reply_markup: new Keyboard().text("➕ Добавить канал/группу").row().text("🔙 Главное меню").resized().persistent()
     });
   } else {
     let msg = "📋 **Каналы/группы/чаты:**\n\n";
-    for (const chatId of CONFIG.monitoredChats) {
+    for (let i = 0; i < CONFIG.monitoredChats.length; i++) {
+      const chatId = CONFIG.monitoredChats[i];
       try {
         const chat = await ctx.api.getChat(chatId);
-        msg += `• ${chat.title || chat.first_name || 'Chat'}\n  ID: \`${chatId}\`\n\n`;
+        msg += `${i + 1}. ${chat.title || chat.first_name || 'Chat'}\n   ID: \`${chatId}\`\n\n`;
       } catch (error) {
-        msg += `• Недоступен (ID: \`${chatId}\`)\n\n`;
+        msg += `${i + 1}. Недоступен (ID: \`${chatId}\`)\n\n`;
       }
     }
-    await ctx.editMessageText(msg, {
+    msg += "Для удаления нажмите кнопку ниже:";
+    
+    const keyboard = new Keyboard();
+    keyboard.text("🗑️ Удалить канал/группу");
+    keyboard.row().text("🔙 Главное меню");
+    
+    await ctx.reply(msg, {
       parse_mode: "Markdown",
-      reply_markup: new InlineKeyboard().text("🔙 Назад", "menu_main")
+      reply_markup: keyboard.resized().persistent()
     });
   }
-  await ctx.answerCallbackQuery();
 });
 
-bot.callbackQuery("list_words", async (ctx) => {
+bot.hears("📝 Список слов", async (ctx) => {
   CONFIG = loadConfig();
   if (CONFIG.searchTerms.length === 0) {
-    await ctx.editMessageText("📝 Список пуст.", {
-      reply_markup: new InlineKeyboard().text("➕ Добавить", "add_word").row().text("🔙 Назад", "menu_main")
+    await ctx.reply("📝 Список пуст.", {
+      reply_markup: new Keyboard().text("🔍 Добавить слово").row().text("🔙 Главное меню").resized().persistent()
     });
   } else {
     let msg = "📝 **Слова:**\n\n";
     CONFIG.searchTerms.forEach((term, i) => {
       msg += `${i + 1}. ${term}\n`;
     });
-    await ctx.editMessageText(msg, {
+    msg += "\nДля удаления нажмите кнопку ниже:";
+    
+    const keyboard = new Keyboard();
+    keyboard.text("🗑️ Удалить слово");
+    keyboard.row().text("🔙 Главное меню");
+    
+    await ctx.reply(msg, {
       parse_mode: "Markdown",
-      reply_markup: new InlineKeyboard().text("🔙 Назад", "menu_main")
+      reply_markup: keyboard.resized().persistent()
     });
   }
-  await ctx.answerCallbackQuery();
 });
 
-bot.callbackQuery("settings", async (ctx) => {
+bot.hears("⚙️ Настройки", async (ctx) => {
   CONFIG = loadConfig();
-  await ctx.editMessageText(
+  await ctx.reply(
     `⚙️ **Настройки**\n\n📬 Уведомления: ${CONFIG.notificationChatId ? "✅" : "❌"}\n📊 Каналов: ${CONFIG.monitoredChats.length}\n🔍 Слов: ${CONFIG.searchTerms.length}\n🔎 Поиск: ${CONFIG.searchEnabled ? "✅ Включен" : "⏸️ Остановлен"}`,
     {
       parse_mode: "Markdown",
-      reply_markup: new InlineKeyboard()
-        .text("📬 Настроить уведомления", "set_notification")
+      reply_markup: new Keyboard()
+        .text("📬 Настроить уведомления")
         .row()
-        .text("🔙 Назад", "menu_main")
+        .text("🔙 Главное меню")
+        .resized()
+        .persistent()
     }
   );
-  await ctx.answerCallbackQuery();
 });
 
-bot.callbackQuery("set_notification", async (ctx) => {
+bot.hears("📬 Настроить уведомления", async (ctx) => {
   CONFIG = loadConfig();
   CONFIG.notificationChatId = String(ctx.chat.id);
   if (saveConfig(CONFIG)) {
-    await ctx.editMessageText(`✅ Уведомления настроены!\n\nID: \`${ctx.chat.id}\``, {
+    await ctx.reply(`✅ Уведомления настроены!\n\nID: \`${ctx.chat.id}\``, {
       parse_mode: "Markdown",
-      reply_markup: new InlineKeyboard().text("🔙 Назад", "settings")
+      reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
     });
-    await ctx.answerCallbackQuery("✅ Готово!");
   }
 });
 
-bot.callbackQuery("status", async (ctx) => {
+bot.hears("📊 Статус", async (ctx) => {
   CONFIG = loadConfig();
-  await ctx.editMessageText(
+  await ctx.reply(
     `📊 **Статус**\n\n📱 Каналов: ${CONFIG.monitoredChats.length}\n🔍 Слов: ${CONFIG.searchTerms.length}\n📬 Уведомления: ${CONFIG.notificationChatId ? "✅" : "❌"}\n🔎 Поиск: ${CONFIG.searchEnabled ? "✅ Включен" : "⏸️ Остановлен"}`,
     {
       parse_mode: "Markdown",
-      reply_markup: new InlineKeyboard().text("🔙 Назад", "menu_main")
+      reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
     }
   );
-  await ctx.answerCallbackQuery();
 });
 
-bot.callbackQuery("toggle_search", async (ctx) => {
+// Обработчик для начала/остановки поиска
+bot.hears(/^(▶️ Начать поиск|⏸️ Остановить поиск)$/, async (ctx) => {
   CONFIG = loadConfig();
   
   if (!CONFIG.searchEnabled) {
     // Начинаем поиск в истории
-    await ctx.answerCallbackQuery("🔍 Начинаю поиск в истории...");
     
     if (CONFIG.monitoredChats.length === 0) {
-      await ctx.editMessageText(
+      await ctx.reply(
         "❌ **Нет каналов для поиска!**\n\nСначала добавьте канал/группу/чат.",
         {
           parse_mode: "Markdown",
-          reply_markup: new InlineKeyboard().text("➕ Добавить канал", "add_chat").row().text("🔙 Назад", "menu_main")
+          reply_markup: new Keyboard().text("➕ Добавить канал/группу").row().text("🔙 Главное меню").resized().persistent()
         }
       );
       return;
     }
     
     if (CONFIG.searchTerms.length === 0) {
-      await ctx.editMessageText(
+      await ctx.reply(
         "❌ **Нет слов для поиска!**\n\nСначала добавьте слово для поиска.",
         {
           parse_mode: "Markdown",
-          reply_markup: new InlineKeyboard().text("🔍 Добавить слово", "add_word").row().text("🔙 Назад", "menu_main")
+          reply_markup: new Keyboard().text("🔍 Добавить слово").row().text("🔙 Главное меню").resized().persistent()
         }
       );
       return;
@@ -382,11 +418,11 @@ bot.callbackQuery("toggle_search", async (ctx) => {
     CONFIG.searchEnabled = true;
     saveConfig(CONFIG);
     
-    await ctx.editMessageText(
+    await ctx.reply(
       "🔍 **Поиск в истории начат!**\n\nИщу слова в истории каналов...\n\nЭто может занять некоторое время.",
       {
         parse_mode: "Markdown",
-        reply_markup: new InlineKeyboard().text("⏸️ Остановить", "toggle_search")
+        reply_markup: new Keyboard().text("⏸️ Остановить поиск").row().text("🔙 Главное меню").resized().persistent()
       }
     );
     
@@ -397,11 +433,11 @@ bot.callbackQuery("toggle_search", async (ctx) => {
         if (!telegramClient) {
           telegramClient = await initTelegramClient();
           if (!telegramClient) {
-            await ctx.editMessageText(
+            await ctx.reply(
               "❌ **Ошибка подключения!**\n\nНужны API_ID и API_HASH от https://my.telegram.org/apps\n\nДобавьте их в .env файл.",
               {
                 parse_mode: "Markdown",
-                reply_markup: new InlineKeyboard().text("🔙 Главное меню", "menu_main")
+                reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
               }
             );
             return;
@@ -412,11 +448,11 @@ bot.callbackQuery("toggle_search", async (ctx) => {
             await telegramClient.connect();
             
             if (!await telegramClient.checkAuthorization()) {
-              await ctx.editMessageText(
+              await ctx.reply(
                 "❌ **Требуется авторизация!**\n\nЗапустите бота из консоли для первой авторизации.\n\nИли используйте отдельный скрипт для авторизации.",
                 {
                   parse_mode: "Markdown",
-                  reply_markup: new InlineKeyboard().text("🔙 Главное меню", "menu_main")
+                  reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
                 }
               );
               return;
@@ -443,24 +479,21 @@ bot.callbackQuery("toggle_search", async (ctx) => {
         CONFIG.searchEnabled = false;
         saveConfig(CONFIG);
         
-        await ctx.editMessageText(
+        await ctx.reply(
           `✅ **Поиск завершен!**\n\nНайдено сообщений: **${totalFound}**\n\nИспользуйте кнопку "📋 Показать результаты" для просмотра.`,
           {
             parse_mode: "Markdown",
-            reply_markup: new InlineKeyboard()
-              .text("📋 Показать результаты", "show_results")
-              .row()
-              .text("🔙 Главное меню", "menu_main")
+            reply_markup: createMainMenu()
           }
         );
         
       } catch (error) {
         console.error("Ошибка поиска:", error);
-        await ctx.editMessageText(
+        await ctx.reply(
           `❌ **Ошибка поиска:**\n\n${error.message}\n\nПроверьте настройки API_ID и API_HASH.`,
           {
             parse_mode: "Markdown",
-            reply_markup: new InlineKeyboard().text("🔙 Главное меню", "menu_main")
+            reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
           }
         );
       }
@@ -471,8 +504,7 @@ bot.callbackQuery("toggle_search", async (ctx) => {
     CONFIG.searchEnabled = false;
     saveConfig(CONFIG);
     
-    await ctx.answerCallbackQuery("⏸️ Поиск остановлен!");
-    await ctx.editMessageText(
+    await ctx.reply(
       "⏸️ **Поиск остановлен!**\n\nНайдено сообщений: " + CONFIG.searchResults.length,
       {
         parse_mode: "Markdown",
@@ -482,196 +514,172 @@ bot.callbackQuery("toggle_search", async (ctx) => {
   }
 });
 
-bot.callbackQuery("show_results", async (ctx) => {
+bot.hears(/^📋 Показать результаты/, async (ctx) => {
   CONFIG = loadConfig();
   
   if (!CONFIG.searchResults || CONFIG.searchResults.length === 0) {
-    await ctx.editMessageText(
+    await ctx.reply(
       "📋 **Результаты поиска**\n\nПока ничего не найдено.\n\nНачните поиск, чтобы найти сообщения.",
       {
         parse_mode: "Markdown",
-        reply_markup: new InlineKeyboard().text("▶️ Начать поиск", "toggle_search").row().text("🔙 Назад", "menu_main")
+        reply_markup: new Keyboard().text("▶️ Начать поиск").row().text("🔙 Главное меню").resized().persistent()
       }
     );
-    await ctx.answerCallbackQuery();
     return;
   }
   
   // Показываем список результатов с номерами
   let message = `📋 **Результаты поиска**\n\nНайдено сообщений: **${CONFIG.searchResults.length}**\n\n`;
-  message += "Выберите номер для просмотра полного сообщения:\n\n";
+  message += "Список найденных сообщений:\n\n";
   
   CONFIG.searchResults.forEach((result, index) => {
-    const date = new Date(result.date * 1000).toLocaleString('ru-RU');
-    const preview = result.text.length > 80 ? result.text.substring(0, 80) + '...' : result.text;
     message += `${index + 1}. **${result.chatName}**\n`;
-    message += `   📅 ${date}\n`;
-    message += `   💬 ${preview}\n\n`;
+    message += `   🔍 Найдено по слову: **${result.foundTerm || 'неизвестно'}**\n`;
+    message += `   🔗 [Ссылка на пост](${result.link})\n\n`;
   });
   
-  await ctx.editMessageText(message, {
+  await ctx.reply(message, {
     parse_mode: "Markdown",
-    reply_markup: new InlineKeyboard()
-      .text("📄 Показать все", "show_all_results")
+    reply_markup: new Keyboard()
+      .text("📄 Показать все")
       .row()
-      .text("🗑️ Очистить", "clear_results")
+      .text("🗑️ Очистить")
       .row()
-      .text("🔙 Главное меню", "menu_main")
+      .text("🔙 Главное меню")
+      .resized()
+      .persistent()
   });
-  await ctx.answerCallbackQuery();
 });
 
 // Показать все результаты по одному
-bot.callbackQuery("show_all_results", async (ctx) => {
+bot.hears("📄 Показать все", async (ctx) => {
   CONFIG = loadConfig();
   
   if (!CONFIG.searchResults || CONFIG.searchResults.length === 0) {
-    await ctx.answerCallbackQuery("Нет результатов");
+    await ctx.reply("Нет результатов", {
+      reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
+    });
     return;
   }
   
   // Отправляем каждое сообщение отдельно
   for (let i = 0; i < CONFIG.searchResults.length; i++) {
     const result = CONFIG.searchResults[i];
-    const date = new Date(result.date * 1000).toLocaleString('ru-RU');
     
     const fullMessage = `🔍 **Найдено совпадение #${i + 1}**
 
-📱 **Источник:** ${result.chatName}
-👤 **Автор:** ${result.author}
-📅 **Время:** ${date}
-
-💬 **Полное сообщение:**
-
-${result.text}`;
+📱 **Канал:** ${result.chatName}
+🔍 **Найдено по слову:** ${result.foundTerm || 'неизвестно'}
+🔗 [Ссылка на пост](${result.link})`;
     
     try {
-      if (i === 0) {
-        // Первое сообщение редактируем
-        await ctx.editMessageText(fullMessage, {
-          parse_mode: "Markdown",
-          reply_markup: new InlineKeyboard()
-            .text("➡️ Следующее", `next_result_${i + 1}`)
-            .row()
-            .text("🔙 К списку", "show_results")
-        });
-      } else {
-        // Остальные отправляем новыми сообщениями
-        await ctx.reply(fullMessage, {
-          parse_mode: "Markdown"
-        });
-      }
+      await ctx.reply(fullMessage, {
+        parse_mode: "Markdown"
+      });
     } catch (error) {
       console.error("Ошибка отправки результата:", error.message);
     }
   }
   
-  await ctx.answerCallbackQuery("✅ Все результаты отправлены!");
-});
-
-// Навигация по результатам
-bot.callbackQuery(/^next_result_(\d+)$/, async (ctx) => {
-  const index = parseInt(ctx.match[1]) - 1;
-  CONFIG = loadConfig();
-  
-  if (index >= CONFIG.searchResults.length) {
-    await ctx.answerCallbackQuery("Это последнее сообщение");
-    return;
-  }
-  
-  const result = CONFIG.searchResults[index];
-  const date = new Date(result.date * 1000).toLocaleString('ru-RU');
-  
-  const fullMessage = `🔍 **Найдено совпадение #${index + 1}**
-
-📱 **Источник:** ${result.chatName}
-👤 **Автор:** ${result.author}
-📅 **Время:** ${date}
-
-💬 **Полное сообщение:**
-
-${result.text}`;
-  
-  const keyboard = new InlineKeyboard();
-  if (index > 0) {
-    keyboard.text("⬅️ Предыдущее", `prev_result_${index - 1}`);
-  }
-  if (index < CONFIG.searchResults.length - 1) {
-    keyboard.text("➡️ Следующее", `next_result_${index + 1}`);
-  }
-  keyboard.row().text("🔙 К списку", "show_results");
-  
-  await ctx.editMessageText(fullMessage, {
-    parse_mode: "Markdown",
-    reply_markup: keyboard
+  await ctx.reply("✅ Все результаты отправлены!", {
+    reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
   });
-  await ctx.answerCallbackQuery();
 });
 
-bot.callbackQuery(/^prev_result_(\d+)$/, async (ctx) => {
-  const index = parseInt(ctx.match[1]);
-  CONFIG = loadConfig();
-  
-  if (index < 0 || index >= CONFIG.searchResults.length) {
-    await ctx.answerCallbackQuery("Ошибка");
-    return;
-  }
-  
-  const result = CONFIG.searchResults[index];
-  const date = new Date(result.date * 1000).toLocaleString('ru-RU');
-  
-  const fullMessage = `🔍 **Найдено совпадение #${index + 1}**
-
-📱 **Источник:** ${result.chatName}
-👤 **Автор:** ${result.author}
-📅 **Время:** ${date}
-
-💬 **Полное сообщение:**
-
-${result.text}`;
-  
-  const keyboard = new InlineKeyboard();
-  if (index > 0) {
-    keyboard.text("⬅️ Предыдущее", `prev_result_${index - 1}`);
-  }
-  if (index < CONFIG.searchResults.length - 1) {
-    keyboard.text("➡️ Следующее", `next_result_${index + 1}`);
-  }
-  keyboard.row().text("🔙 К списку", "show_results");
-  
-  await ctx.editMessageText(fullMessage, {
-    parse_mode: "Markdown",
-    reply_markup: keyboard
-  });
-  await ctx.answerCallbackQuery();
-});
-
-bot.callbackQuery("clear_results", async (ctx) => {
+bot.hears("🗑️ Очистить", async (ctx) => {
   CONFIG = loadConfig();
   CONFIG.searchResults = [];
   saveConfig(CONFIG);
   
-  await ctx.editMessageText(
+  await ctx.reply(
     "🗑️ **Результаты очищены!**",
     {
       parse_mode: "Markdown",
-      reply_markup: new InlineKeyboard().text("🔙 Главное меню", "menu_main")
+      reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
     }
   );
-  await ctx.answerCallbackQuery("✅ Очищено!");
 });
 
-bot.callbackQuery("menu_main", async (ctx) => {
-  await ctx.editMessageText("📱 **Главное меню:**", {
+// Удаление канала/группы
+bot.hears("🗑️ Удалить канал/группу", async (ctx) => {
+  CONFIG = loadConfig();
+  if (CONFIG.monitoredChats.length === 0) {
+    await ctx.reply("📋 Список пуст. Нечего удалять.", {
+      reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
+    });
+    return;
+  }
+  
+  let msg = "🗑️ **Удаление канала/группы**\n\nВыберите номер для удаления:\n\n";
+  for (let i = 0; i < CONFIG.monitoredChats.length; i++) {
+    const chatId = CONFIG.monitoredChats[i];
+    try {
+      const chat = await ctx.api.getChat(chatId);
+      msg += `${i + 1}. ${chat.title || chat.first_name || 'Chat'}\n   ID: \`${chatId}\`\n\n`;
+    } catch (error) {
+      msg += `${i + 1}. Недоступен (ID: \`${chatId}\`)\n\n`;
+    }
+  }
+  msg += "Отправьте номер канала/группы для удаления:";
+  
+  userStates.set(ctx.from.id, { action: "delete_chat" });
+  
+  await ctx.reply(msg, {
     parse_mode: "Markdown",
-    reply_markup: createMainMenu()
+    reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
   });
-  await ctx.answerCallbackQuery();
+});
+
+// Удаление слова
+bot.hears("🗑️ Удалить слово", async (ctx) => {
+  CONFIG = loadConfig();
+  if (CONFIG.searchTerms.length === 0) {
+    await ctx.reply("📝 Список пуст. Нечего удалять.", {
+      reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
+    });
+    return;
+  }
+  
+  let msg = "🗑️ **Удаление слова**\n\nВыберите номер для удаления:\n\n";
+  CONFIG.searchTerms.forEach((term, i) => {
+    msg += `${i + 1}. ${term}\n`;
+  });
+  msg += "\nОтправьте номер слова для удаления:";
+  
+  userStates.set(ctx.from.id, { action: "delete_word" });
+  
+  await ctx.reply(msg, {
+    parse_mode: "Markdown",
+    reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
+  });
 });
 
 bot.on("message", async (ctx) => {
   if (ctx.message.text && ctx.message.text.startsWith('/')) {
     return;
+  }
+  
+  // Игнорируем нажатия кнопок меню
+  const menuButtons = [
+    "➕ Добавить канал/группу",
+    "🔍 Добавить слово",
+    "▶️ Начать поиск",
+    "⏸️ Остановить поиск",
+    "📋 Показать результаты",
+    "📋 Список каналов",
+    "📝 Список слов",
+    "⚙️ Настройки",
+    "📊 Статус",
+    "🔙 Главное меню",
+    "📬 Настроить уведомления",
+    "📄 Показать все",
+    "🗑️ Очистить",
+    "🗑️ Удалить канал/группу",
+    "🗑️ Удалить слово"
+  ];
+  
+  if (ctx.message.text && menuButtons.includes(ctx.message.text)) {
+    return; // Обработчики hears() обработают это
   }
   
   const userId = ctx.from.id;
@@ -703,7 +711,7 @@ bot.on("message", async (ctx) => {
           chatName = `Chat ${chatId}`;
         } else {
           await ctx.reply(`❌ Ошибка: ${error.description || error.message}`, {
-            reply_markup: new InlineKeyboard().text("🔙 Назад", "menu_main")
+            reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
           });
           userStates.delete(userId);
           return;
@@ -712,7 +720,7 @@ bot.on("message", async (ctx) => {
       
       if (CONFIG.monitoredChats.includes(chatId)) {
         await ctx.reply(`❌ Уже в списке!`, {
-          reply_markup: new InlineKeyboard().text("🔙 Главное меню", "menu_main")
+          reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
         });
         userStates.delete(userId);
         return;
@@ -722,7 +730,7 @@ bot.on("message", async (ctx) => {
       if (saveConfig(CONFIG)) {
         await ctx.reply(`✅ "${chatName}" добавлен!\n\nID: \`${chatId}\``, {
           parse_mode: "Markdown",
-          reply_markup: new InlineKeyboard().text("🔙 Главное меню", "menu_main")
+          reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
         });
       }
       userStates.delete(userId);
@@ -739,7 +747,7 @@ bot.on("message", async (ctx) => {
       
       if (CONFIG.searchTerms.includes(word)) {
         await ctx.reply(`❌ Уже в списке!`, {
-          reply_markup: new InlineKeyboard().text("🔙 Главное меню", "menu_main")
+          reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
         });
         userStates.delete(userId);
         return;
@@ -748,7 +756,68 @@ bot.on("message", async (ctx) => {
       CONFIG.searchTerms.push(word);
       if (saveConfig(CONFIG)) {
         await ctx.reply(`✅ Слово "${text.trim()}" добавлено!`, {
-          reply_markup: new InlineKeyboard().text("🔙 Главное меню", "menu_main")
+          reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
+        });
+      }
+      userStates.delete(userId);
+    }
+    
+    if (state.action === "delete_chat") {
+      CONFIG = loadConfig();
+      const input = text.trim();
+      const index = parseInt(input) - 1;
+      
+      if (isNaN(index) || index < 0 || index >= CONFIG.monitoredChats.length) {
+        await ctx.reply("❌ Неверный номер! Попробуйте еще раз или нажмите '🔙 Главное меню' для отмены.", {
+          reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
+        });
+        return;
+      }
+      
+      const chatId = CONFIG.monitoredChats[index];
+      let chatName = `Chat ${chatId}`;
+      
+      try {
+        const chat = await ctx.api.getChat(chatId);
+        chatName = chat.title || chat.first_name || chatName;
+      } catch (error) {
+        // Используем chatName по умолчанию
+      }
+      
+      CONFIG.monitoredChats.splice(index, 1);
+      if (saveConfig(CONFIG)) {
+        await ctx.reply(`✅ Канал/группа "${chatName}" удален из списка!`, {
+          reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
+        });
+      } else {
+        await ctx.reply("❌ Ошибка при сохранении.", {
+          reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
+        });
+      }
+      userStates.delete(userId);
+    }
+    
+    if (state.action === "delete_word") {
+      CONFIG = loadConfig();
+      const input = text.trim();
+      const index = parseInt(input) - 1;
+      
+      if (isNaN(index) || index < 0 || index >= CONFIG.searchTerms.length) {
+        await ctx.reply("❌ Неверный номер! Попробуйте еще раз или нажмите '🔙 Главное меню' для отмены.", {
+          reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
+        });
+        return;
+      }
+      
+      const word = CONFIG.searchTerms[index];
+      CONFIG.searchTerms.splice(index, 1);
+      if (saveConfig(CONFIG)) {
+        await ctx.reply(`✅ Слово "${word}" удалено из списка!`, {
+          reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
+        });
+      } else {
+        await ctx.reply("❌ Ошибка при сохранении.", {
+          reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
         });
       }
       userStates.delete(userId);
@@ -781,7 +850,8 @@ bot.on("message", async (ctx) => {
   console.log(`🔍 Проверяю сообщение на слова: ${CONFIG.searchTerms.join(', ')}`);
   console.log(`📝 Текст: ${messageText.substring(0, 100)}...`);
   
-  if (containsSearchTerms(messageText)) {
+  const foundTerm = findSearchTerm(messageText);
+  if (foundTerm) {
     const chatName = ctx.chat.title || ctx.chat.first_name || `Chat ${ctx.chat.id}`;
     console.log(`✅ ✅ ✅ НАЙДЕНО СОВПАДЕНИЕ в "${chatName}"`);
     
@@ -793,7 +863,8 @@ bot.on("message", async (ctx) => {
       text: messageText, // Полный текст сообщения
       author: ctx.from ? (ctx.from.first_name || ctx.from.username || 'Неизвестно') : 'Неизвестно',
       date: ctx.message.date,
-      link: `https://t.me/c/${String(ctx.chat.id).slice(4)}/${ctx.message.message_id}`
+      link: `https://t.me/c/${String(ctx.chat.id).slice(4)}/${ctx.message.message_id}`,
+      foundTerm: foundTerm
     };
     
     CONFIG.searchResults.push(result);
@@ -854,7 +925,8 @@ bot.on("channel_post", async (ctx) => {
     console.log(`🔍 Проверяю сообщение на слова: ${CONFIG.searchTerms.join(', ')}`);
     console.log(`📝 Текст сообщения: ${messageText.substring(0, 100)}...`);
     
-    if (containsSearchTerms(messageText)) {
+    const foundTerm = findSearchTerm(messageText);
+    if (foundTerm) {
       const chatName = ctx.chat.title || `Channel ${ctx.chat.id}`;
       console.log(`✅ ✅ ✅ НАЙДЕНО СОВПАДЕНИЕ в канале "${chatName}"`);
       
@@ -866,7 +938,8 @@ bot.on("channel_post", async (ctx) => {
         text: messageText, // Полный текст сообщения
         author: 'Канал',
         date: ctx.channelPost.date,
-        link: `https://t.me/c/${String(ctx.chat.id).slice(4)}/${ctx.channelPost.message_id}`
+        link: `https://t.me/c/${String(ctx.chat.id).slice(4)}/${ctx.channelPost.message_id}`,
+        foundTerm: foundTerm
       };
       
       CONFIG.searchResults.push(result);

@@ -73,6 +73,64 @@ async function initTelegramClient() {
   return client;
 }
 
+// Функция для извлечения всего текста из сообщения, включая текст из ссылок
+function extractFullText(message) {
+  if (!message) return "";
+  
+  let text = message.message || message.text || message.caption || "";
+  const fullText = text; // Сохраняем оригинальный текст для извлечения
+  
+  // Если есть entities (форматирование, ссылки и т.д.), извлекаем текст из них
+  const entities = message.entities || message.raw?.entities || message.caption_entities || [];
+  
+  if (entities && entities.length > 0) {
+    // Проходим по всем entities и добавляем текст ссылок
+    for (const entity of entities) {
+      if (entity && typeof entity === 'object') {
+        // Для grammy: entity.type может быть "text_link", "url", "mention", "hashtag" и т.д.
+        // Для Telethon: entity может быть объектом с className или _ (тип)
+        const entityType = entity.type || entity._ || entity.className || entity.constructor?.name || '';
+        
+        // Проверяем, является ли это ссылкой
+        const isLink = entityType === 'text_link' || 
+                      entityType === 'url' || 
+                      entityType === 'messageEntityUrl' || 
+                      entityType === 'messageEntityTextUrl' ||
+                      entityType.includes('Url') || 
+                      entityType.includes('TextUrl') ||
+                      entity.url;
+        
+        if (isLink) {
+          // Извлекаем текст ссылки из сообщения
+          const offset = entity.offset || 0;
+          const length = entity.length || 0;
+          
+          if (offset >= 0 && offset + length <= fullText.length) {
+            const linkText = fullText.substring(offset, offset + length);
+            // Добавляем текст ссылки к основному тексту для поиска (если его еще нет)
+            if (linkText && linkText.trim() && !text.includes(linkText)) {
+              text += ' ' + linkText;
+              console.log(`🔗 Найден текст ссылки: "${linkText}"`);
+            }
+          }
+          
+          // Если есть URL (для text_link), добавляем его тоже
+          if (entity.url) {
+            const url = entity.url;
+            // Добавляем URL только если его еще нет в тексте
+            if (url && !text.includes(url)) {
+              text += ' ' + url;
+              console.log(`🔗 Найден URL ссылки: "${url}"`);
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  return text.trim();
+}
+
 // Функция для поиска в истории канала/группы
 async function searchInChannelHistory(chatId, searchTerms, limit = 1000) {
   if (!telegramClient || !telegramClient.connected) {
@@ -90,29 +148,89 @@ async function searchInChannelHistory(chatId, searchTerms, limit = 1000) {
     
     try {
       // Для каналов/супергрупп с ID типа -100XXXXXXXXXX
-      // Библиотека telegram может работать с разными форматами
+      // В Telethon для каналов нужно использовать правильный формат
       if (typeof chatId === 'string' && chatId.startsWith('-100')) {
-        // Для супергрупп и каналов используем полный ID
-        // Пробуем получить entity по полному ID
+        // Для супергрупп и каналов: ID -100XXXXXXXXXX означает channel ID = XXXXXXXXXX
+        // Извлекаем реальный channel ID (убираем префикс -100)
+        const cleanId = chatId.replace(/^-100/, '');
+        const channelIdNum = BigInt(cleanId);
+        
+        // Способ 1: Сначала ищем в диалогах (самый надежный способ)
+        console.log(`🔍 Ищу канал ${chatId} в диалогах...`);
+        let foundInDialogs = false;
         try {
-          entity = await telegramClient.getEntity(chatId);
-        } catch (e) {
-          // Если не получилось, пробуем без префикса
-          const cleanId = chatId.replace(/^-100/, '');
-          entity = await telegramClient.getEntity(parseInt(cleanId));
+          // Получаем больше диалогов для поиска
+          const dialogs = await telegramClient.getDialogs({ limit: 500 });
+          
+          // Ищем канал по разным форматам ID
+          const found = dialogs.find(d => {
+            try {
+              // Получаем ID диалога в разных форматах
+              const dialogId = String(d.id);
+              const dialogIdValue = d.id?.value !== undefined ? String(d.id.value) : null;
+              const dialogIdBigInt = d.id?.value || d.id;
+              
+              // Проверяем все возможные форматы
+              const matches = 
+                dialogId === chatId || 
+                dialogId === cleanId || 
+                dialogId === `-100${cleanId}` ||
+                (dialogIdValue && (dialogIdValue === cleanId || dialogIdValue === chatId)) ||
+                (dialogIdBigInt && (String(dialogIdBigInt) === cleanId || String(dialogIdBigInt) === chatId));
+              
+              if (matches) {
+                console.log(`🔍 Найден диалог: ID=${dialogId}, name=${d.name || d.title || 'Без названия'}`);
+              }
+              
+              return matches;
+            } catch (err) {
+              return false;
+            }
+          });
+          
+          if (found && found.entity) {
+            entity = found.entity;
+            chatName = found.name || found.title || found.entity.title || chatName;
+            console.log(`✅ Канал найден в диалогах: ${chatName}`);
+            foundInDialogs = true;
+          }
+        } catch (e1) {
+          console.log(`⚠️ Ошибка поиска в диалогах: ${e1.message}`);
+        }
+        
+        // Если не нашли в диалогах, пробуем другие способы
+        if (!foundInDialogs) {
+          // Способ 2: Пробуем через строку с полным ID
+          try {
+            console.log(`🔍 Пробую получить entity через строку ${chatId}...`);
+            entity = await telegramClient.getEntity(chatId);
+            chatName = entity.title || entity.firstName || chatName;
+            console.log(`✅ Канал получен через строку: ${chatName}`);
+          } catch (e2) {
+            // Способ 3: Пробуем через числовой ID (может не сработать для каналов)
+            try {
+              console.log(`🔍 Пробую получить entity через числовой ID ${cleanId}...`);
+              // Для каналов это обычно не работает, но попробуем
+              entity = await telegramClient.getEntity(parseInt(cleanId));
+              chatName = entity.title || entity.firstName || chatName;
+              console.log(`✅ Канал получен через числовой ID: ${chatName}`);
+            } catch (e3) {
+              throw new Error(`Не удалось получить доступ к каналу ${chatId}.\n\nПопробовано:\n1. Поиск в диалогах (500 чатов)\n2. Прямой запрос по строке\n3. Запрос по числовому ID\n\n💡 **Важно:** Канал должен быть в ваших диалогах!\n\nУбедитесь, что:\n- Вы подписаны на канал через Telegram\n- Канал виден в вашем списке чатов\n- Вы авторизованы через Telegram клиент (запустите: node auth.js)\n- Попробуйте открыть канал в Telegram перед поиском`);
+            }
+          }
         }
       } else if (typeof chatId === 'string' && chatId.startsWith('@')) {
         // Username
         entity = await telegramClient.getEntity(chatId);
+        chatName = entity.title || entity.firstName || chatName;
       } else {
         // Пробуем как есть (может быть числовой ID)
         entity = await telegramClient.getEntity(chatId);
+        chatName = entity.title || entity.firstName || chatName;
       }
-      
-      chatName = entity.title || entity.firstName || chatName;
     } catch (error) {
       console.error(`Ошибка получения entity для ${chatId}:`, error.message);
-      return { error: `Не удалось получить доступ к каналу: ${error.message}\n\nУбедитесь, что:\n- Канал существует\n- Вы подписаны на канал\n- Канал не является приватным` };
+      return { error: `Не удалось получить доступ к каналу: ${error.message}\n\n💡 **Возможные решения:**\n- Убедитесь, что канал существует\n- Подпишитесь на канал через Telegram\n- Если канал приватный, добавьте бота как администратора\n- Убедитесь, что вы авторизованы через Telegram клиент (запустите: node auth.js)\n- Проверьте, что канал виден в вашем списке чатов` };
     }
     
     console.log(`📱 Подключен к каналу: ${chatName}`);
@@ -146,8 +264,12 @@ async function searchInChannelHistory(chatId, searchTerms, limit = 1000) {
             break;
           }
           
-          const text = msg.message || msg.text || "";
-          const lowerText = text.toLowerCase();
+          // Извлекаем весь текст для поиска, включая текст из ссылок
+          const searchText = extractFullText(msg);
+          const lowerText = searchText.toLowerCase();
+          
+          // Оригинальный текст сообщения (для сохранения)
+          const originalText = msg.message || msg.text || "";
           
           // Проверяем наличие искомых слов
           let foundTerm = null;
@@ -166,7 +288,7 @@ async function searchInChannelHistory(chatId, searchTerms, limit = 1000) {
               chatId: String(chatId),
               chatName: chatName,
               messageId: msg.id,
-              text: text,
+              text: originalText,
               author: "Канал",
               date: messageDate,
               link: `https://t.me/c/${cleanChatId}/${msg.id}`,
@@ -846,21 +968,25 @@ bot.on("message", async (ctx) => {
     return;
   }
   
-  const messageText = ctx.message.text || ctx.message.caption || '';
+  // Извлекаем весь текст для поиска, включая текст из ссылок
+  const searchText = extractFullText(ctx.message);
   console.log(`🔍 Проверяю сообщение на слова: ${CONFIG.searchTerms.join(', ')}`);
-  console.log(`📝 Текст: ${messageText.substring(0, 100)}...`);
+  console.log(`📝 Текст: ${searchText.substring(0, 100)}...`);
   
-  const foundTerm = findSearchTerm(messageText);
+  // Оригинальный текст сообщения (для сохранения)
+  const originalText = ctx.message.text || ctx.message.caption || '';
+  
+  const foundTerm = findSearchTerm(searchText);
   if (foundTerm) {
     const chatName = ctx.chat.title || ctx.chat.first_name || `Chat ${ctx.chat.id}`;
     console.log(`✅ ✅ ✅ НАЙДЕНО СОВПАДЕНИЕ в "${chatName}"`);
     
-    // Сохраняем результат поиска (полное сообщение)
+    // Сохраняем результат поиска (оригинальный текст сообщения)
     const result = {
       chatId: String(ctx.chat.id),
       chatName: chatName,
       messageId: ctx.message.message_id,
-      text: messageText, // Полный текст сообщения
+      text: originalText,
       author: ctx.from ? (ctx.from.first_name || ctx.from.username || 'Неизвестно') : 'Неизвестно',
       date: ctx.message.date,
       link: `https://t.me/c/${String(ctx.chat.id).slice(4)}/${ctx.message.message_id}`,
@@ -879,7 +1005,7 @@ bot.on("message", async (ctx) => {
 🕐 **Время:** ${new Date(ctx.message.date * 1000).toLocaleString('ru-RU')}
 
 💬 **Сообщение:**
-${messageText}`;
+${originalText}`;
     
     if (CONFIG.notificationChatId) {
       try {
@@ -921,21 +1047,25 @@ bot.on("channel_post", async (ctx) => {
       return;
     }
     
-    const messageText = ctx.channelPost.text || ctx.channelPost.caption || '';
+    // Извлекаем весь текст для поиска, включая текст из ссылок
+    const searchText = extractFullText(ctx.channelPost);
     console.log(`🔍 Проверяю сообщение на слова: ${CONFIG.searchTerms.join(', ')}`);
-    console.log(`📝 Текст сообщения: ${messageText.substring(0, 100)}...`);
+    console.log(`📝 Текст сообщения: ${searchText.substring(0, 100)}...`);
     
-    const foundTerm = findSearchTerm(messageText);
+    // Оригинальный текст сообщения (для сохранения)
+    const originalText = ctx.channelPost.text || ctx.channelPost.caption || '';
+    
+    const foundTerm = findSearchTerm(searchText);
     if (foundTerm) {
       const chatName = ctx.chat.title || `Channel ${ctx.chat.id}`;
       console.log(`✅ ✅ ✅ НАЙДЕНО СОВПАДЕНИЕ в канале "${chatName}"`);
       
-      // Сохраняем результат поиска (полное сообщение из канала)
+      // Сохраняем результат поиска (оригинальный текст сообщения)
       const result = {
         chatId: String(ctx.chat.id),
         chatName: chatName,
         messageId: ctx.channelPost.message_id,
-        text: messageText, // Полный текст сообщения
+        text: originalText,
         author: 'Канал',
         date: ctx.channelPost.date,
         link: `https://t.me/c/${String(ctx.chat.id).slice(4)}/${ctx.channelPost.message_id}`,
@@ -953,7 +1083,7 @@ bot.on("channel_post", async (ctx) => {
 🕐 **Время:** ${new Date(ctx.channelPost.date * 1000).toLocaleString('ru-RU')}
 
 💬 **Сообщение:**
-${messageText}`;
+${originalText}`;
       
       if (CONFIG.notificationChatId) {
         try {

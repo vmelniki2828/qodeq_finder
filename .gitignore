@@ -1,6 +1,33 @@
+# Зависимости
 node_modules/
+
+# Переменные окружения
 .env
-*.log
-.DS_Store
+.env.local
+.env.*.local
+
+# Сессии Telegram
+telegram_session.txt
+*.session
+*.session-journal
+
+# Конфигурация
 config.json
 
+# Логи
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Временные файлы
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# PM2
+.pm2/

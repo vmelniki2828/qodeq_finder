@@ -131,6 +131,50 @@ function extractFullText(message) {
   return text.trim();
 }
 
+// Функция для получения публичного канала по ID без подписки
+async function getPublicChannelById(telegramClient, chatId) {
+  const cleanId = chatId.replace(/^-100/, '');
+  const channelIdNum = BigInt(cleanId);
+  const { Api } = await import('telegram/tl/index.js');
+  
+  // Метод 1: Пробуем через getEntity (может работать для некоторых публичных каналов)
+  try {
+    const entity = await telegramClient.getEntity(chatId);
+    return { entity, method: 'getEntity (string)' };
+  } catch (e1) {
+    try {
+      const entity = await telegramClient.getEntity(parseInt(cleanId));
+      return { entity, method: 'getEntity (numeric)' };
+    } catch (e2) {
+      // Метод 2: Пробуем через getChannels (требует accessHash, но попробуем)
+      try {
+        // Для публичных каналов иногда можно получить через getChannels
+        // Но это требует accessHash, который мы не знаем
+        // Попробуем с нулевым accessHash для публичных каналов
+        const result = await telegramClient.invoke(
+          new Api.channels.GetChannels({
+            id: [
+              new Api.InputChannel({
+                channelId: channelIdNum,
+                accessHash: BigInt(0)
+              })
+            ]
+          })
+        );
+        
+        if (result && result.chats && result.chats.length > 0) {
+          return { entity: result.chats[0], method: 'getChannels' };
+        }
+        throw new Error('Канал не найден в результате');
+      } catch (e3) {
+        // Метод 3: Пробуем найти через поиск (если канал публичный)
+        // Но для этого нужен @username
+        throw new Error(`Все методы не сработали. Ошибки: getEntity(string)=${e1.message}, getEntity(numeric)=${e2.message}, getChannels=${e3.message}`);
+      }
+    }
+  }
+}
+
 // Функция для поиска в истории канала/группы
 async function searchInChannelHistory(chatId, searchTerms, limit = 1000) {
   if (!telegramClient || !telegramClient.connected) {
@@ -148,81 +192,49 @@ async function searchInChannelHistory(chatId, searchTerms, limit = 1000) {
     
     try {
       // Для каналов/супергрупп с ID типа -100XXXXXXXXXX
-      // В Telethon для каналов нужно использовать правильный формат
+      // Пытаемся получить доступ БЕЗ подписки и БЕЗ прав администратора
       if (typeof chatId === 'string' && chatId.startsWith('-100')) {
         // Для супергрупп и каналов: ID -100XXXXXXXXXX означает channel ID = XXXXXXXXXX
-        // Извлекаем реальный channel ID (убираем префикс -100)
         const cleanId = chatId.replace(/^-100/, '');
         const channelIdNum = BigInt(cleanId);
         
-        // Способ 1: Сначала ищем в диалогах (самый надежный способ)
-        console.log(`🔍 Ищу канал ${chatId} в диалогах...`);
-        let foundInDialogs = false;
-        try {
-          // Получаем больше диалогов для поиска
-          const dialogs = await telegramClient.getDialogs({ limit: 500 });
-          
-          // Ищем канал по разным форматам ID
-          const found = dialogs.find(d => {
-            try {
-              // Получаем ID диалога в разных форматах
-              const dialogId = String(d.id);
-              const dialogIdValue = d.id?.value !== undefined ? String(d.id.value) : null;
-              const dialogIdBigInt = d.id?.value || d.id;
-              
-              // Проверяем все возможные форматы
-              const matches = 
-                dialogId === chatId || 
-                dialogId === cleanId || 
-                dialogId === `-100${cleanId}` ||
-                (dialogIdValue && (dialogIdValue === cleanId || dialogIdValue === chatId)) ||
-                (dialogIdBigInt && (String(dialogIdBigInt) === cleanId || String(dialogIdBigInt) === chatId));
-              
-              if (matches) {
-                console.log(`🔍 Найден диалог: ID=${dialogId}, name=${d.name || d.title || 'Без названия'}`);
-              }
-              
-              return matches;
-            } catch (err) {
-              return false;
-            }
-          });
-          
-          if (found && found.entity) {
-            entity = found.entity;
-            chatName = found.name || found.title || found.entity.title || chatName;
-            console.log(`✅ Канал найден в диалогах: ${chatName}`);
-            foundInDialogs = true;
-          }
-        } catch (e1) {
-          console.log(`⚠️ Ошибка поиска в диалогах: ${e1.message}`);
-        }
+        console.log(`🔍 Пытаюсь получить доступ к публичному каналу по ID: ${chatId}...`);
         
-        // Если не нашли в диалогах, пробуем другие способы
-        if (!foundInDialogs) {
-          // Способ 2: Пробуем через строку с полным ID
+        try {
+          // Используем специальную функцию для получения публичного канала
+          const result = await getPublicChannelById(telegramClient, chatId);
+          entity = result.entity;
+          chatName = entity.title || entity.firstName || chatName;
+          console.log(`✅ Публичный канал получен (метод: ${result.method}): ${chatName}`);
+        } catch (error) {
+          // Если не получилось через специальные методы, пробуем поиск в диалогах
+          console.log(`⚠️ Прямые методы не сработали: ${error.message}`);
+          console.log(`🔍 Пробую найти канал в диалогах...`);
+          
           try {
-            console.log(`🔍 Пробую получить entity через строку ${chatId}...`);
-            entity = await telegramClient.getEntity(chatId);
-            chatName = entity.title || entity.firstName || chatName;
-            console.log(`✅ Канал получен через строку: ${chatName}`);
-          } catch (e2) {
-            // Способ 3: Пробуем через числовой ID (может не сработать для каналов)
-            try {
-              console.log(`🔍 Пробую получить entity через числовой ID ${cleanId}...`);
-              // Для каналов это обычно не работает, но попробуем
-              entity = await telegramClient.getEntity(parseInt(cleanId));
-              chatName = entity.title || entity.firstName || chatName;
-              console.log(`✅ Канал получен через числовой ID: ${chatName}`);
-            } catch (e3) {
-              throw new Error(`Не удалось получить доступ к каналу ${chatId}.\n\nПопробовано:\n1. Поиск в диалогах (500 чатов)\n2. Прямой запрос по строке\n3. Запрос по числовому ID\n\n💡 **Важно:** Канал должен быть в ваших диалогах!\n\nУбедитесь, что:\n- Вы подписаны на канал через Telegram\n- Канал виден в вашем списке чатов\n- Вы авторизованы через Telegram клиент (запустите: node auth.js)\n- Попробуйте открыть канал в Telegram перед поиском`);
+            const dialogs = await telegramClient.getDialogs({ limit: 500 });
+            const found = dialogs.find(d => {
+              const dialogId = String(d.id);
+              return dialogId === chatId || dialogId === cleanId || dialogId === `-100${cleanId}`;
+            });
+            
+            if (found && found.entity) {
+              entity = found.entity;
+              chatName = found.name || found.title || found.entity.title || chatName;
+              console.log(`✅ Канал найден в диалогах: ${chatName}`);
+            } else {
+              throw new Error(`Не удалось получить доступ к каналу ${chatId}.\n\nПопробовано:\n1. Прямые методы получения публичного канала\n2. Поиск в диалогах (500 чатов)\n\n💡 **Важно:**\n- Для работы БЕЗ подписки канал должен быть публичным\n- Публичные каналы лучше добавлять через @username вместо ID\n- Для приватных каналов требуется подписка или права администратора\n\nПопробуйте:\n1. Использовать @username канала вместо ID (например: @channelname)\n2. Убедиться, что канал публичный и существует\n3. Проверить правильность ID канала`);
             }
+          } catch (e2) {
+            throw new Error(`Не удалось получить доступ к каналу ${chatId}.\n\nОшибки:\n1. Прямые методы: ${error.message}\n2. Поиск в диалогах: ${e2.message}\n\n💡 **Решения:**\n- Используйте @username канала вместо ID (например: @channelname)\n- Убедитесь, что канал публичный\n- Для приватных каналов требуется подписка или права администратора`);
           }
         }
       } else if (typeof chatId === 'string' && chatId.startsWith('@')) {
-        // Username
+        // Username - это самый надежный способ для публичных каналов
+        console.log(`🔍 Получаю публичный канал по @username: ${chatId}...`);
         entity = await telegramClient.getEntity(chatId);
         chatName = entity.title || entity.firstName || chatName;
+        console.log(`✅ Публичный канал получен: ${chatName}`);
       } else {
         // Пробуем как есть (может быть числовой ID)
         entity = await telegramClient.getEntity(chatId);
@@ -230,7 +242,7 @@ async function searchInChannelHistory(chatId, searchTerms, limit = 1000) {
       }
     } catch (error) {
       console.error(`Ошибка получения entity для ${chatId}:`, error.message);
-      return { error: `Не удалось получить доступ к каналу: ${error.message}\n\n💡 **Возможные решения:**\n- Убедитесь, что канал существует\n- Подпишитесь на канал через Telegram\n- Если канал приватный, добавьте бота как администратора\n- Убедитесь, что вы авторизованы через Telegram клиент (запустите: node auth.js)\n- Проверьте, что канал виден в вашем списке чатов` };
+      return { error: `Не удалось получить доступ к каналу: ${error.message}\n\n💡 **Решения:**\n- Убедитесь, что канал публичный\n- Для публичных каналов используйте @username вместо ID\n- Для приватных каналов требуется подписка или права администратора` };
     }
     
     console.log(`📱 Подключен к каналу: ${chatName}`);

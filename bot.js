@@ -44,6 +44,7 @@ function saveConfig(config) {
 
 let CONFIG = loadConfig();
 const userStates = new Map();
+const userPagination = new Map(); // Хранит состояние пагинации для каждого пользователя
 
 // Инициализация Telegram клиента для поиска в истории
 let telegramClient = null;
@@ -398,6 +399,7 @@ bot.command("start", async (ctx) => {
 bot.hears("🔙 Главное меню", async (ctx) => {
   // Сбрасываем состояние пользователя при возврате в главное меню
   userStates.delete(ctx.from.id);
+  userPagination.delete(ctx.from.id); // Очищаем пагинацию
   await ctx.reply("📱 **Главное меню:**", {
     parse_mode: "Markdown",
     reply_markup: createMainMenu()
@@ -648,7 +650,8 @@ bot.hears(/^(▶️ Начать поиск|⏸️ Остановить поис
   }
 });
 
-bot.hears(/^📋 Показать результаты/, async (ctx) => {
+// Функция для отправки результатов с пагинацией
+async function sendPaginatedResults(ctx, page = 0) {
   CONFIG = loadConfig();
   
   if (!CONFIG.searchResults || CONFIG.searchResults.length === 0) {
@@ -662,30 +665,106 @@ bot.hears(/^📋 Показать результаты/, async (ctx) => {
     return;
   }
   
-  // Показываем список результатов с номерами
-  let message = `📋 **Результаты поиска**\n\nНайдено сообщений: **${CONFIG.searchResults.length}**\n\n`;
-  message += "Список найденных сообщений:\n\n";
+  const RESULTS_PER_PAGE = 10; // Количество результатов на странице
+  const totalResults = CONFIG.searchResults.length;
+  const totalPages = Math.ceil(totalResults / RESULTS_PER_PAGE);
+  const currentPage = Math.min(page, totalPages - 1);
+  const startIndex = currentPage * RESULTS_PER_PAGE;
+  const endIndex = Math.min(startIndex + RESULTS_PER_PAGE, totalResults);
   
-  CONFIG.searchResults.forEach((result, index) => {
-    message += `${index + 1}. **${result.chatName}**\n`;
+  // Сохраняем состояние пагинации
+  userPagination.set(ctx.from.id, { currentPage, totalPages });
+  
+  // Формируем сообщение для текущей страницы
+  let message = `📋 **Результаты поиска**\n\n`;
+  message += `Найдено сообщений: **${totalResults}**\n`;
+  message += `Страница ${currentPage + 1} из ${totalPages}\n\n`;
+  
+  // Добавляем результаты текущей страницы
+  for (let i = startIndex; i < endIndex; i++) {
+    const result = CONFIG.searchResults[i];
+    message += `${i + 1}. **${result.chatName}**\n`;
     message += `   🔍 Найдено по слову: **${result.foundTerm || 'неизвестно'}**\n`;
     message += `   🔗 [Ссылка на пост](${result.link})\n\n`;
-  });
+  }
   
-  await ctx.reply(message, {
-    parse_mode: "Markdown",
-    reply_markup: new Keyboard()
-      .text("📄 Показать все")
-      .row()
-      .text("🗑️ Очистить")
-      .row()
-      .text("🔙 Главное меню")
-      .resized()
-      .persistent()
-  });
+  // Создаем клавиатуру с навигацией
+  const keyboard = new Keyboard();
+  
+  // Кнопки навигации
+  if (totalPages > 1) {
+    if (currentPage > 0) {
+      keyboard.text("◀️ Назад");
+    }
+    if (currentPage < totalPages - 1) {
+      keyboard.text("▶️ Вперед");
+    }
+    if (currentPage > 0 || currentPage < totalPages - 1) {
+      keyboard.row();
+    }
+  }
+  
+  // Дополнительные кнопки
+  keyboard
+    .text("📄 Показать все")
+    .row()
+    .text("🗑️ Очистить")
+    .row()
+    .text("🔙 Главное меню");
+  
+  try {
+    await ctx.reply(message, {
+      parse_mode: "Markdown",
+      reply_markup: keyboard.resized().persistent()
+    });
+  } catch (error) {
+    // Если сообщение все еще слишком длинное, уменьшаем количество результатов на странице
+    if (error.description && error.description.includes('too long')) {
+      console.log(`⚠️ Сообщение слишком длинное, уменьшаю количество результатов на странице`);
+      // Пробуем с меньшим количеством результатов
+      const SMALLER_PAGE = 5;
+      const newEndIndex = Math.min(startIndex + SMALLER_PAGE, totalResults);
+      message = `📋 **Результаты поиска**\n\n`;
+      message += `Найдено сообщений: **${totalResults}**\n`;
+      message += `Страница ${currentPage + 1} из ${Math.ceil(totalResults / SMALLER_PAGE)}\n\n`;
+      
+      for (let i = startIndex; i < newEndIndex; i++) {
+        const result = CONFIG.searchResults[i];
+        message += `${i + 1}. **${result.chatName}**\n`;
+        message += `   🔍 **${result.foundTerm || 'неизвестно'}**\n`;
+        message += `   🔗 [Ссылка](${result.link})\n\n`;
+      }
+      
+      await ctx.reply(message, {
+        parse_mode: "Markdown",
+        reply_markup: keyboard.resized().persistent()
+      });
+    } else {
+      throw error;
+    }
+  }
+}
+
+bot.hears(/^📋 Показать результаты/, async (ctx) => {
+  await sendPaginatedResults(ctx, 0);
 });
 
-// Показать все результаты по одному
+// Обработчики навигации по страницам
+bot.hears("◀️ Назад", async (ctx) => {
+  const pagination = userPagination.get(ctx.from.id);
+  if (pagination && pagination.currentPage > 0) {
+    await sendPaginatedResults(ctx, pagination.currentPage - 1);
+  }
+});
+
+bot.hears("▶️ Вперед", async (ctx) => {
+  const pagination = userPagination.get(ctx.from.id);
+  if (pagination && pagination.currentPage < pagination.totalPages - 1) {
+    await sendPaginatedResults(ctx, pagination.currentPage + 1);
+  }
+});
+
+// Показать все результаты по одному (с пагинацией)
 bot.hears("📄 Показать все", async (ctx) => {
   CONFIG = loadConfig();
   
@@ -696,28 +775,54 @@ bot.hears("📄 Показать все", async (ctx) => {
     return;
   }
   
-  // Отправляем каждое сообщение отдельно
-  for (let i = 0; i < CONFIG.searchResults.length; i++) {
-    const result = CONFIG.searchResults[i];
+  const totalResults = CONFIG.searchResults.length;
+  const BATCH_SIZE = 5; // Отправляем по 5 сообщений за раз, чтобы не перегружать API
+  
+  await ctx.reply(
+    `📄 **Отправка всех результатов**\n\nВсего найдено: **${totalResults}** сообщений\n\nОтправляю по ${BATCH_SIZE} сообщений...`,
+    {
+      parse_mode: "Markdown",
+      reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
+    }
+  );
+  
+  // Отправляем результаты батчами с задержкой
+  for (let i = 0; i < totalResults; i += BATCH_SIZE) {
+    const batch = CONFIG.searchResults.slice(i, i + BATCH_SIZE);
     
-    const fullMessage = `🔍 **Найдено совпадение #${i + 1}**
+    for (const result of batch) {
+      const index = CONFIG.searchResults.indexOf(result) + 1;
+      const fullMessage = `🔍 **Найдено совпадение #${index}**
 
 📱 **Канал:** ${result.chatName}
 🔍 **Найдено по слову:** ${result.foundTerm || 'неизвестно'}
 🔗 [Ссылка на пост](${result.link})`;
+      
+      try {
+        await ctx.reply(fullMessage, {
+          parse_mode: "Markdown"
+        });
+        // Небольшая задержка между сообщениями
+        await new Promise(resolve => setTimeout(resolve, 200));
+      } catch (error) {
+        console.error(`Ошибка отправки результата #${index}:`, error.message);
+        // Продолжаем отправку остальных
+      }
+    }
     
-    try {
-      await ctx.reply(fullMessage, {
-        parse_mode: "Markdown"
-      });
-    } catch (error) {
-      console.error("Ошибка отправки результата:", error.message);
+    // Задержка между батчами
+    if (i + BATCH_SIZE < totalResults) {
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
   }
   
-  await ctx.reply("✅ Все результаты отправлены!", {
-    reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
-  });
+  await ctx.reply(
+    `✅ **Все результаты отправлены!**\n\nОтправлено: **${totalResults}** сообщений`,
+    {
+      parse_mode: "Markdown",
+      reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
+    }
+  );
 });
 
 bot.hears("🗑️ Очистить", async (ctx) => {

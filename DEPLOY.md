@@ -185,13 +185,24 @@ pm2 monit
 ### Просмотр логов
 
 ```bash
-# Логи PM2
+# Логи PM2 (в реальном времени)
+pm2 logs qodeq-finder
+
+# Последние 100 строк
+pm2 logs qodeq-finder --lines 100
+
+# Только ошибки
+pm2 logs qodeq-finder --err
+
+# Файлы логов
 tail -f logs/pm2-out.log
 tail -f logs/pm2-error.log
 
 # Если используете systemd
 journalctl -u qodeq-finder -f
 ```
+
+📋 **Подробная инструкция:** см. [LOGS.md](LOGS.md)
 
 ## 🔄 Обновление бота
 

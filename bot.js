@@ -377,9 +377,6 @@ function createMainMenu() {
     .text("📋 Список каналов")
     .text("📝 Список слов")
     .row()
-    .text("⚙️ Настройки")
-    .text("📊 Статус")
-    .row()
     .text("🔙 Главное меню");
   
   return keyboard.resized().persistent();
@@ -482,43 +479,6 @@ bot.hears("📝 Список слов", async (ctx) => {
   }
 });
 
-bot.hears("⚙️ Настройки", async (ctx) => {
-  CONFIG = loadConfig();
-  await ctx.reply(
-    `⚙️ **Настройки**\n\n📬 Уведомления: ${CONFIG.notificationChatId ? "✅" : "❌"}\n📊 Каналов: ${CONFIG.monitoredChats.length}\n🔍 Слов: ${CONFIG.searchTerms.length}\n🔎 Поиск: ${CONFIG.searchEnabled ? "✅ Включен" : "⏸️ Остановлен"}`,
-    {
-      parse_mode: "Markdown",
-      reply_markup: new Keyboard()
-        .text("📬 Настроить уведомления")
-        .row()
-        .text("🔙 Главное меню")
-        .resized()
-        .persistent()
-    }
-  );
-});
-
-bot.hears("📬 Настроить уведомления", async (ctx) => {
-  CONFIG = loadConfig();
-  CONFIG.notificationChatId = String(ctx.chat.id);
-  if (saveConfig(CONFIG)) {
-    await ctx.reply(`✅ Уведомления настроены!\n\nID: \`${ctx.chat.id}\``, {
-      parse_mode: "Markdown",
-      reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
-    });
-  }
-});
-
-bot.hears("📊 Статус", async (ctx) => {
-  CONFIG = loadConfig();
-  await ctx.reply(
-    `📊 **Статус**\n\n📱 Каналов: ${CONFIG.monitoredChats.length}\n🔍 Слов: ${CONFIG.searchTerms.length}\n📬 Уведомления: ${CONFIG.notificationChatId ? "✅" : "❌"}\n🔎 Поиск: ${CONFIG.searchEnabled ? "✅ Включен" : "⏸️ Остановлен"}`,
-    {
-      parse_mode: "Markdown",
-      reply_markup: new Keyboard().text("🔙 Главное меню").resized().persistent()
-    }
-  );
-});
 
 // Обработчик для начала/остановки поиска
 bot.hears(/^(▶️ Начать поиск|⏸️ Остановить поиск)$/, async (ctx) => {
@@ -907,10 +867,7 @@ bot.on("message", async (ctx) => {
     "📋 Показать результаты",
     "📋 Список каналов",
     "📝 Список слов",
-    "⚙️ Настройки",
-    "📊 Статус",
     "🔙 Главное меню",
-    "📬 Настроить уведомления",
     "📄 Показать все",
     "🗑️ Очистить",
     "🗑️ Удалить канал/группу",
